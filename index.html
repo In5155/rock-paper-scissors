@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Rock Paper Scissors – Multiplayer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;600&family=DM+Sans:wght@400;500&family=Playfair+Display:ital,wght@0,700;1,400&display=swap" rel="stylesheet">
+
+  <!-- Firebase SDK -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+    import { getDatabase, ref, set, onValue, update, remove, push }
+      from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+
+    // ─── 🔧 REPLACE WITH YOUR FIREBASE CONFIG ───────────────────────────────
+    const firebaseConfig = {
+      apiKey: "AIzaSyDL1AtmuRSsg83UYBVnrl_tZAhxId63lRM",
+      authDomain: "rock-paper-scissors-88a22.firebaseapp.com",
+      databaseURL: "https://rock-paper-scissors-88a22-default-rtdb.firebaseio.com",
+      projectId: "rock-paper-scissors-88a22",
+      storageBucket: "rock-paper-scissors-88a22.firebasestorage.app",
+      messagingSenderId: "635044147900",
+      appId: "1:635044147900:web:b2699141218a0478fad6b9",
+      measurementId: "G-6WKVJJR893"
+    };
+    // ────────────────────────────────────────────────────────────────────────
+
+    const app = initializeApp(firebaseConfig);
+    const db  = getDatabase(app);
+
+    const emoji = { Rock: "🪨", Paper: "📄", Scissors: "✂️" };
+    const choices = ["Rock", "Paper", "Scissors"];
+
+    let myRole   = null; // "player1" | "player2"
+    let roomCode = null;
+    let roomRef  = null;
+    let unsubscribe = null;
+
+    // ── DOM refs ──────────────────────────────────────────────────────────────
+    const screens = {
+      lobby:  document.getElementById("screen-lobby"),
+      wait:   document.getElementById("screen-wait"),
+      game:   document.getElementById("screen-game"),
+    };
+
+    const createBtn    = document.getElementById("createBtn");
+    const joinBtn      = document.getElementById("joinBtn");
+    const joinCodeIn   = document.getElementById("joinCode");
+    const codeDisplay  = document.getElementById("codeDisplay");
+    const waitMsg      = document.getElementById("waitMsg");
+    const choiceBtns   = document.querySelectorAll(".choices button");
+    const resultBox    = document.getElementById("result");
+    const resultText   = document.getElementById("resultText");
+    const detailEl     = document.getElementById("detail");
+    const playerEmojiEl  = document.getElementById("playerEmoji");
+    const computerEmojiEl = document.getElementById("computerEmoji");
+    const winsEl       = document.getElementById("wins");
+    const tiesEl       = document.getElementById("ties");
+    const lossesEl     = document.getElementById("losses");
+    const nextRoundBtn = document.getElementById("nextRoundBtn");
+    const leaveBtn     = document.getElementById("leaveBtn");
+    const copyBtn      = document.getElementById("copyBtn");
+    const statusDot    = document.getElementById("statusDot");
+    const statusLabel  = document.getElementById("statusLabel");
+    const myChoiceLabel     = document.getElementById("myChoiceLabel");
+    const oppChoiceLabel    = document.getElementById("oppChoiceLabel");
+    const p1Label      = document.getElementById("p1Label");
+    const p2Label      = document.getElementById("p2Label");
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+    function show(name) {
+      Object.values(screens).forEach(s => s.classList.add("hidden"));
+      screens[name].classList.remove("hidden");
+    }
+
+    function genCode() {
+      return Math.random().toString(36).substring(2, 7).toUpperCase();
+    }
+
+    function getResult(me, opp) {
+      if (me === opp) return "tie";
+      if (
+        (me === "Rock"     && opp === "Scissors") ||
+        (me === "Paper"    && opp === "Rock")     ||
+        (me === "Scissors" && opp === "Paper")
+      ) return "win";
+      return "lose";
+    }
+
+    function opponentRole() {
+      return myRole === "player1" ? "player2" : "player1";
+    }
+
+    // ── Create Room ───────────────────────────────────────────────────────────
+    createBtn.addEventListener("click", async () => {
+      roomCode = genCode();
+      myRole   = "player1";
+      roomRef  = ref(db, `rooms/${roomCode}`);
+
+      await set(roomRef, {
+        player1: { score: { wins: 0, ties: 0, losses: 0 }, choice: null, ready: false },
+        player2: null,
+        status: "waiting"
+      });
+
+      codeDisplay.textContent = roomCode;
+      show("wait");
+      waitMsg.textContent = "Share the code above — waiting for opponent…";
+      listenRoom();
+    });
+
+    // ── Join Room ─────────────────────────────────────────────────────────────
+    joinBtn.addEventListener("click", async () => {
+      const code = joinCodeIn.value.trim().toUpperCase();
+      if (!code) return;
+
+      const snap = await new Promise(res => {
+        onValue(ref(db, `rooms/${code}`), res, { onlyOnce: true });
+      });
+
+      const data = snap.val();
+      if (!data) return alert("Room not found. Check the code and try again.");
+      if (data.player2) return alert("Room is already full.");
+
+      roomCode = code;
+      myRole   = "player2";
+      roomRef  = ref(db, `rooms/${roomCode}`);
+
+      await update(ref(db, `rooms/${roomCode}/player2`), {
+        score: { wins: 0, ties: 0, losses: 0 }, choice: null, ready: false
+      });
+      await update(roomRef, { status: "playing" });
+
+      show("game");
+      setLabels();
+      listenRoom();
+    });
+
+    // ── Copy code ─────────────────────────────────────────────────────────────
+    copyBtn.addEventListener("click", () => {
+      navigator.clipboard.writeText(roomCode).then(() => {
+        copyBtn.textContent = "✓ Copied";
+        setTimeout(() => copyBtn.textContent = "Copy", 1500);
+      });
+    });
+
+    // ── Listen to room ────────────────────────────────────────────────────────
+    function listenRoom() {
+      unsubscribe = onValue(roomRef, (snap) => {
+        const data = snap.val();
+        if (!data) return; // room deleted
+
+        // Player 2 joined → start game (for player 1)
+        if (myRole === "player1" && data.status === "playing" && screens.wait.classList.contains("hidden") === false) {
+          show("game");
+          setLabels();
+        }
+
+        // Opponent left
+        if (data.status === "playing" && !data[opponentRole()]) {
+          alert("Opponent left the game.");
+          leaveRoom();
+          return;
+        }
+
+        // Update status dot
+        const oppPresent = !!data[opponentRole()];
+        statusDot.className  = "dot " + (oppPresent ? "green" : "red");
+        statusLabel.textContent = oppPresent ? "Opponent connected" : "Waiting for opponent…";
+
+        // Both choices in → resolve
+        const myChoice  = data[myRole]?.choice;
+        const oppChoice = data[opponentRole()]?.choice;
+
+        if (myChoice && oppChoice) {
+          resolveRound(data, myChoice, oppChoice);
+        }
+
+        if (myChoice && !oppChoice) {
+          myChoiceLabel.textContent   = `You chose ${emoji[myChoice]}`;
+          oppChoiceLabel.textContent  = "Opponent is thinking…";
+        } else if (!myChoice) {
+          myChoiceLabel.textContent  = "";
+          oppChoiceLabel.textContent = "";
+        }
+      });
+    }
+
+    // ── Make choice ───────────────────────────────────────────────────────────
+    choiceBtns.forEach(btn => {
+      btn.addEventListener("click", () => {
+        if (!roomCode) return;
+        update(ref(db, `rooms/${roomCode}/${myRole}`), { choice: btn.dataset.choice });
+        choiceBtns.forEach(b => b.disabled = true);
+      });
+    });
+
+    // ── Resolve ───────────────────────────────────────────────────────────────
+    async function resolveRound(data, myChoice, oppChoice) {
+      // Only player1 writes scores to avoid double-write
+      if (myRole === "player1") {
+        const outcome1 = getResult(myChoice, oppChoice);
+        const outcome2 = getResult(oppChoice, myChoice);
+        const s1 = data.player1.score;
+        const s2 = data.player2.score;
+
+        const newS1 = {
+          wins:   s1.wins   + (outcome1 === "win"  ? 1 : 0),
+          ties:   s1.ties   + (outcome1 === "tie"  ? 1 : 0),
+          losses: s1.losses + (outcome1 === "lose" ? 1 : 0),
+        };
+        const newS2 = {
+          wins:   s2.wins   + (outcome2 === "win"  ? 1 : 0),
+          ties:   s2.ties   + (outcome2 === "tie"  ? 1 : 0),
+          losses: s2.losses + (outcome2 === "lose" ? 1 : 0),
+        };
+        await update(ref(db, `rooms/${roomCode}/player1`), { score: newS1 });
+        await update(ref(db, `rooms/${roomCode}/player2`), { score: newS2 });
+      }
+
+      // Display result for everyone (re-read up-to-date scores next tick via listener)
+      showResult(data, myChoice, oppChoice);
+    }
+
+    function showResult(data, myChoice, oppChoice) {
+      const outcome = getResult(myChoice, oppChoice);
+
+      playerEmojiEl.textContent  = emoji[myChoice];
+      computerEmojiEl.textContent = emoji[oppChoice];
+      p1Label.textContent = "You";
+      p2Label.textContent = "Opponent";
+
+      resultText.textContent =
+        outcome === "win"  ? "You Win! 🎉" :
+        outcome === "lose" ? "You Lose! 😞" : "It's a Tie! 🤝";
+
+      resultText.style.color =
+        outcome === "win"  ? "#3e8f5a" :
+        outcome === "lose" ? "#a94442" : "#b89b2e";
+
+      detailEl.textContent = `${myChoice} vs ${oppChoice}`;
+
+      // Show scores from Firebase (will be updated by listener shortly)
+      const sc = data[myRole]?.score;
+      if (sc) {
+        winsEl.textContent   = sc.wins;
+        tiesEl.textContent   = sc.ties;
+        lossesEl.textContent = sc.losses;
+      }
+
+      resultBox.classList.remove("hidden");
+      nextRoundBtn.classList.remove("hidden");
+      choiceBtns.forEach(b => b.disabled = true);
+      myChoiceLabel.textContent  = "";
+      oppChoiceLabel.textContent = "";
+    }
+
+    // ── Next round ────────────────────────────────────────────────────────────
+    nextRoundBtn.addEventListener("click", async () => {
+      resultBox.classList.add("hidden");
+      nextRoundBtn.classList.add("hidden");
+      choiceBtns.forEach(b => b.disabled = false);
+      await update(ref(db, `rooms/${roomCode}/${myRole}`), { choice: null });
+    });
+
+    // ── Leave ─────────────────────────────────────────────────────────────────
+    leaveBtn.addEventListener("click", leaveRoom);
+
+    async function leaveRoom() {
+      if (unsubscribe) unsubscribe();
+      if (roomRef && myRole === "player1") {
+        await remove(roomRef); // host deletes room
+      } else if (roomRef) {
+        await update(ref(db, `rooms/${roomCode}/player2`), null);
+      }
+      roomCode = roomRef = myRole = null;
+      choiceBtns.forEach(b => b.disabled = false);
+      resultBox.classList.add("hidden");
+      nextRoundBtn.classList.add("hidden");
+      joinCodeIn.value = "";
+      winsEl.textContent = tiesEl.textContent = lossesEl.textContent = "0";
+      show("lobby");
+    }
+
+    function setLabels() {}
+
+    // ── Start ─────────────────────────────────────────────────────────────────
+    show("lobby");
+  </script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --paper: #f6f1e9;
+      --paper-dark: #eee7db;
+      --ink: #1f1d1a;
+      --ink-mid: #5f5a52;
+      --ink-light: #a09a92;
+      --rule: #d8d1c4;
+      --accent: #b23a2f;
+      --mono: 'DM Mono', monospace;
+      --serif: 'Playfair Display', Georgia, serif;
+      --sans: 'DM Sans', system-ui, sans-serif;
+    }
+
+    body {
+      background: #e7e1d6;
+      background-image: repeating-linear-gradient(0deg, transparent, transparent 26px, rgba(0,0,0,0.035) 26px, rgba(0,0,0,0.035) 27px);
+      font-family: var(--sans);
+      color: var(--ink);
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 32px 16px;
+    }
+
+    .app {
+      width: 420px;
+      background: var(--paper);
+      border-radius: 3px;
+      box-shadow: -4px 0 0 #bdb4a5, 0 3px 6px rgba(0,0,0,0.12), 0 16px 40px rgba(0,0,0,0.15);
+      padding: 28px 26px 30px 58px;
+      position: relative;
+      animation: appear 0.45s cubic-bezier(.22,1,.36,1) both;
+    }
+
+    @keyframes appear {
+      from { opacity: 0; transform: translateY(14px) rotate(-0.25deg); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .app::before {
+      content: '';
+      position: absolute;
+      top: 0; bottom: 0; left: 44px;
+      width: 1px;
+      background: rgba(178,58,47,0.28);
+    }
+
+    h1 {
+      font-family: var(--serif);
+      font-size: 1.85rem;
+      letter-spacing: -0.02em;
+      margin-bottom: 6px;
+    }
+
+    .subtitle {
+      font-family: var(--mono);
+      font-size: 0.6rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--ink-light);
+      margin-bottom: 22px;
+    }
+
+    /* ── Status bar ── */
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin-bottom: 16px;
+      font-family: var(--mono);
+      font-size: 0.6rem;
+      letter-spacing: 0.1em;
+      color: var(--ink-mid);
+    }
+
+    .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .dot.green { background: #3e8f5a; }
+    .dot.red   { background: #a94442; }
+    .dot.gray  { background: var(--ink-light); }
+
+    /* ── Scoreboard ── */
+    .scoreboard {
+      display: flex;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--rule);
+      padding-bottom: 14px;
+      margin-bottom: 22px;
+    }
+
+    .scoreboard > div { text-align: center; }
+
+    .score {
+      font-family: var(--mono);
+      font-size: 1.3rem;
+      font-weight: 600;
+    }
+
+    .green { color: #3e8f5a; }
+    .yellow { color: #b89b2e; }
+    .red    { color: #a94442; }
+
+    .score-label {
+      font-family: var(--mono);
+      font-size: 0.55rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--ink-light);
+    }
+
+    /* ── Choices ── */
+    .choices {
+      display: flex;
+      justify-content: space-between;
+      margin: 24px 0 10px;
+    }
+
+    .choices button {
+      width: 88px;
+      padding: 14px 10px 12px;
+      background: var(--paper-dark);
+      border: 1px solid var(--rule);
+      border-radius: 3px;
+      cursor: pointer;
+      transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s;
+      font-size: 1.8rem;
+    }
+
+    .choices button:hover:not(:disabled) {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 12px rgba(0,0,0,0.12);
+    }
+
+    .choices button:active:not(:disabled) {
+      transform: translateY(0);
+      box-shadow: inset 0 2px 4px rgba(0,0,0,0.18);
+    }
+
+    .choices button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    .choices button span {
+      display: block;
+      margin-top: 6px;
+      font-family: var(--mono);
+      font-size: 0.55rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--ink-mid);
+    }
+
+    /* ── Waiting hints ── */
+    .choice-hints {
+      display: flex;
+      justify-content: space-between;
+      min-height: 18px;
+      margin-bottom: 16px;
+    }
+
+    .choice-hint {
+      font-family: var(--mono);
+      font-size: 0.58rem;
+      letter-spacing: 0.08em;
+      color: var(--ink-light);
+      font-style: italic;
+    }
+
+    /* ── Result ── */
+    .result {
+      margin-top: 14px;
+      padding-top: 14px;
+      border-top: 1px dashed var(--rule);
+    }
+
+    .vs {
+      display: flex;
+      justify-content: space-around;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+
+    .vs > div { text-align: center; }
+
+    .vs-label {
+      font-family: var(--mono);
+      font-size: 0.55rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--ink-light);
+      margin-top: 4px;
+    }
+
+    .emoji { font-size: 2.6rem; }
+
+    .vs-text {
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.12em;
+      color: var(--ink-light);
+    }
+
+    .result-text {
+      font-family: var(--serif);
+      font-size: 1.5rem;
+      font-weight: 700;
+      text-align: center;
+      margin-bottom: 4px;
+    }
+
+    .detail {
+      font-family: var(--mono);
+      font-size: 0.65rem;
+      letter-spacing: 0.08em;
+      color: var(--ink-light);
+      text-align: center;
+    }
+
+    /* ── Buttons ── */
+    .btn-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 22px;
+    }
+
+    .btn {
+      flex: 1;
+      padding: 10px 14px;
+      border: none;
+      border-radius: 2px;
+      font-family: var(--mono);
+      font-size: 0.65rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .btn-dark {
+      background: var(--ink);
+      color: var(--paper);
+    }
+    .btn-dark:hover { background: #2b2925; }
+
+    .btn-outline {
+      background: transparent;
+      color: var(--ink-mid);
+      border: 1px solid var(--rule);
+    }
+    .btn-outline:hover { background: var(--paper-dark); }
+
+    /* ── Lobby ── */
+    .lobby-section { margin-bottom: 20px; }
+
+    .lobby-label {
+      font-family: var(--mono);
+      font-size: 0.58rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--ink-light);
+      margin-bottom: 8px;
+    }
+
+    .room-input-row {
+      display: flex;
+      gap: 8px;
+    }
+
+    .room-input {
+      flex: 1;
+      padding: 10px 12px;
+      background: var(--paper-dark);
+      border: 1px solid var(--rule);
+      border-radius: 2px;
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--ink);
+      outline: none;
+    }
+
+    .room-input:focus { border-color: var(--ink-mid); }
+
+    /* ── Wait screen ── */
+    .code-box {
+      background: var(--paper-dark);
+      border: 1px solid var(--rule);
+      border-radius: 3px;
+      padding: 18px;
+      text-align: center;
+      margin-bottom: 18px;
+    }
+
+    .code-big {
+      font-family: var(--mono);
+      font-size: 2.2rem;
+      font-weight: 600;
+      letter-spacing: 0.18em;
+      color: var(--ink);
+    }
+
+    .code-sub {
+      font-family: var(--mono);
+      font-size: 0.58rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--ink-light);
+      margin-top: 6px;
+    }
+
+    .wait-msg {
+      font-family: var(--mono);
+      font-size: 0.65rem;
+      letter-spacing: 0.08em;
+      color: var(--ink-mid);
+      text-align: center;
+      margin-bottom: 18px;
+    }
+
+    .divider {
+      border: none;
+      border-top: 1px solid var(--rule);
+      margin: 20px 0;
+    }
+
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <h1>Rock Paper Scissors</h1>
+    <div class="subtitle">Multiplayer</div>
+
+    <!-- ── LOBBY ─────────────────────────────────────────────────── -->
+    <div id="screen-lobby">
+      <div class="lobby-section">
+        <div class="lobby-label">Create a new room</div>
+        <button id="createBtn" class="btn btn-dark" style="width:100%">Create Room</button>
+      </div>
+
+      <hr class="divider">
+
+      <div class="lobby-section">
+        <div class="lobby-label">Join existing room</div>
+        <div class="room-input-row">
+          <input id="joinCode" class="room-input" maxlength="5" placeholder="ENTER CODE" />
+          <button id="joinBtn" class="btn btn-dark" style="flex:0 0 auto;padding:10px 16px">Join</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── WAITING ────────────────────────────────────────────────── -->
+    <div id="screen-wait" class="hidden">
+      <div class="code-box">
+        <div class="code-big" id="codeDisplay">——</div>
+        <div class="code-sub">Share this code with your opponent</div>
+      </div>
+      <div class="wait-msg" id="waitMsg">Waiting for opponent…</div>
+      <button id="copyBtn" class="btn btn-outline" style="width:100%">Copy Code</button>
+      <hr class="divider">
+      <button id="leaveWaitBtn" class="btn btn-outline" style="width:100%;margin-top:0">Cancel</button>
+    </div>
+
+    <!-- ── GAME ───────────────────────────────────────────────────── -->
+    <div id="screen-game" class="hidden">
+      <div class="status-bar">
+        <div class="dot gray" id="statusDot"></div>
+        <span id="statusLabel">Connecting…</span>
+      </div>
+
+      <div class="scoreboard">
+        <div>
+          <div id="wins" class="score green">0</div>
+          <div class="score-label">Wins</div>
+        </div>
+        <div>
+          <div id="ties" class="score yellow">0</div>
+          <div class="score-label">Ties</div>
+        </div>
+        <div>
+          <div id="losses" class="score red">0</div>
+          <div class="score-label">Losses</div>
+        </div>
+      </div>
+
+      <div class="choices">
+        <button data-choice="Rock">🪨<span>Rock</span></button>
+        <button data-choice="Paper">📄<span>Paper</span></button>
+        <button data-choice="Scissors">✂️<span>Scissors</span></button>
+      </div>
+
+      <div class="choice-hints">
+        <div class="choice-hint" id="myChoiceLabel"></div>
+        <div class="choice-hint" id="oppChoiceLabel"></div>
+      </div>
+
+      <div id="result" class="result hidden">
+        <div class="vs">
+          <div>
+            <div id="playerEmoji" class="emoji"></div>
+            <div class="vs-label" id="p1Label">You</div>
+          </div>
+          <div class="vs-text">vs</div>
+          <div>
+            <div id="computerEmoji" class="emoji"></div>
+            <div class="vs-label" id="p2Label">Opponent</div>
+          </div>
+        </div>
+        <div id="resultText" class="result-text"></div>
+        <div id="detail" class="detail"></div>
+      </div>
+
+      <div class="btn-row">
+        <button id="nextRoundBtn" class="btn btn-dark hidden">Next Round</button>
+        <button id="leaveBtn" class="btn btn-outline">Leave</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    // Wire up the leave-wait button (not in module scope above)
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+    // leaveWaitBtn handled inline
+    document.getElementById("leaveWaitBtn").addEventListener("click", () => {
+      location.reload();
+    });
+  </script>
+</body>
+</html>
