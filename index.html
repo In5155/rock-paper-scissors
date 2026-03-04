@@ -7,13 +7,11 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;600&family=DM+Sans:wght@400;500&family=Playfair+Display:ital,wght@0,700;1,400&display=swap" rel="stylesheet">
 
-  <!-- Firebase SDK -->
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-    import { getDatabase, ref, set, onValue, update, remove, push }
+    import { getDatabase, ref, set, onValue, update, remove }
       from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 
-    // ─── 🔧 REPLACE WITH YOUR FIREBASE CONFIG ───────────────────────────────
     const firebaseConfig = {
       apiKey: "AIzaSyDL1AtmuRSsg83UYBVnrl_tZAhxId63lRM",
       authDomain: "rock-paper-scissors-88a22.firebaseapp.com",
@@ -24,49 +22,46 @@
       appId: "1:635044147900:web:b2699141218a0478fad6b9",
       measurementId: "G-6WKVJJR893"
     };
-    // ────────────────────────────────────────────────────────────────────────
 
     const app = initializeApp(firebaseConfig);
     const db  = getDatabase(app);
 
     const emoji = { Rock: "🪨", Paper: "📄", Scissors: "✂️" };
-    const choices = ["Rock", "Paper", "Scissors"];
 
-    let myRole   = null; // "player1" | "player2"
-    let roomCode = null;
-    let roomRef  = null;
-    let unsubscribe = null;
+    let myRole        = null;
+    let roomCode      = null;
+    let roomRef       = null;
+    let unsubscribe   = null;
+    let roundResolved = false; // prevents resolveRound firing multiple times per round
 
-    // ── DOM refs ──────────────────────────────────────────────────────────────
+    // ── DOM ───────────────────────────────────────────────────────────────────
     const screens = {
-      lobby:  document.getElementById("screen-lobby"),
-      wait:   document.getElementById("screen-wait"),
-      game:   document.getElementById("screen-game"),
+      lobby: document.getElementById("screen-lobby"),
+      wait:  document.getElementById("screen-wait"),
+      game:  document.getElementById("screen-game"),
     };
-
-    const createBtn    = document.getElementById("createBtn");
-    const joinBtn      = document.getElementById("joinBtn");
-    const joinCodeIn   = document.getElementById("joinCode");
-    const codeDisplay  = document.getElementById("codeDisplay");
-    const waitMsg      = document.getElementById("waitMsg");
-    const choiceBtns   = document.querySelectorAll(".choices button");
-    const resultBox    = document.getElementById("result");
-    const resultText   = document.getElementById("resultText");
-    const detailEl     = document.getElementById("detail");
+    const createBtn      = document.getElementById("createBtn");
+    const joinBtn        = document.getElementById("joinBtn");
+    const joinCodeIn     = document.getElementById("joinCode");
+    const codeDisplay    = document.getElementById("codeDisplay");
+    const waitMsg        = document.getElementById("waitMsg");
+    const choiceBtns     = document.querySelectorAll(".choices button");
+    const resultBox      = document.getElementById("result");
+    const resultText     = document.getElementById("resultText");
+    const detailEl       = document.getElementById("detail");
     const playerEmojiEl  = document.getElementById("playerEmoji");
-    const computerEmojiEl = document.getElementById("computerEmoji");
-    const winsEl       = document.getElementById("wins");
-    const tiesEl       = document.getElementById("ties");
-    const lossesEl     = document.getElementById("losses");
-    const nextRoundBtn = document.getElementById("nextRoundBtn");
-    const leaveBtn     = document.getElementById("leaveBtn");
-    const copyBtn      = document.getElementById("copyBtn");
-    const statusDot    = document.getElementById("statusDot");
-    const statusLabel  = document.getElementById("statusLabel");
-    const myChoiceLabel     = document.getElementById("myChoiceLabel");
-    const oppChoiceLabel    = document.getElementById("oppChoiceLabel");
-    const p1Label      = document.getElementById("p1Label");
-    const p2Label      = document.getElementById("p2Label");
+    const oppEmojiEl     = document.getElementById("computerEmoji");
+    const winsEl         = document.getElementById("wins");
+    const tiesEl         = document.getElementById("ties");
+    const lossesEl       = document.getElementById("losses");
+    const nextRoundBtn   = document.getElementById("nextRoundBtn");
+    const leaveBtn       = document.getElementById("leaveBtn");
+    const leaveWaitBtn   = document.getElementById("leaveWaitBtn");
+    const copyBtn        = document.getElementById("copyBtn");
+    const statusDot      = document.getElementById("statusDot");
+    const statusLabel    = document.getElementById("statusLabel");
+    const myChoiceLabel  = document.getElementById("myChoiceLabel");
+    const oppChoiceLabel = document.getElementById("oppChoiceLabel");
 
     // ── Helpers ───────────────────────────────────────────────────────────────
     function show(name) {
@@ -88,7 +83,7 @@
       return "lose";
     }
 
-    function opponentRole() {
+    function oppRole() {
       return myRole === "player1" ? "player2" : "player1";
     }
 
@@ -99,7 +94,7 @@
       roomRef  = ref(db, `rooms/${roomCode}`);
 
       await set(roomRef, {
-        player1: { score: { wins: 0, ties: 0, losses: 0 }, choice: null, ready: false },
+        player1: { score: { wins: 0, ties: 0, losses: 0 }, choice: null },
         player2: null,
         status: "waiting"
       });
@@ -120,28 +115,27 @@
       });
 
       const data = snap.val();
-      if (!data) return alert("Room not found. Check the code and try again.");
+      if (!data)        return alert("Room not found. Check the code and try again.");
       if (data.player2) return alert("Room is already full.");
 
       roomCode = code;
       myRole   = "player2";
       roomRef  = ref(db, `rooms/${roomCode}`);
 
-      await update(ref(db, `rooms/${roomCode}/player2`), {
-        score: { wins: 0, ties: 0, losses: 0 }, choice: null, ready: false
+      await update(roomRef, {
+        "player2": { score: { wins: 0, ties: 0, losses: 0 }, choice: null },
+        "status": "playing"
       });
-      await update(roomRef, { status: "playing" });
 
       show("game");
-      setLabels();
       listenRoom();
     });
 
     // ── Copy code ─────────────────────────────────────────────────────────────
     copyBtn.addEventListener("click", () => {
       navigator.clipboard.writeText(roomCode).then(() => {
-        copyBtn.textContent = "✓ Copied";
-        setTimeout(() => copyBtn.textContent = "Copy", 1500);
+        copyBtn.textContent = "Copied!";
+        setTimeout(() => copyBtn.textContent = "Copy Code", 1500);
       });
     });
 
@@ -149,87 +143,104 @@
     function listenRoom() {
       unsubscribe = onValue(roomRef, (snap) => {
         const data = snap.val();
-        if (!data) return; // room deleted
+        if (!data) return;
 
-        // Player 2 joined → start game (for player 1)
-        if (myRole === "player1" && data.status === "playing" && screens.wait.classList.contains("hidden") === false) {
+        // P1: opponent joined, move to game
+        if (myRole === "player1" && data.status === "playing" && screens.wait && !screens.wait.classList.contains("hidden")) {
           show("game");
-          setLabels();
         }
 
-        // Opponent left
-        if (data.status === "playing" && !data[opponentRole()]) {
+        // Opponent disconnected
+        if (data.status === "playing" && !data[oppRole()]) {
           alert("Opponent left the game.");
           leaveRoom();
           return;
         }
 
-        // Update status dot
-        const oppPresent = !!data[opponentRole()];
-        statusDot.className  = "dot " + (oppPresent ? "green" : "red");
+        // Status dot
+        const oppPresent        = !!data[oppRole()];
+        statusDot.className     = "dot " + (oppPresent ? "green" : "red");
         statusLabel.textContent = oppPresent ? "Opponent connected" : "Waiting for opponent…";
 
-        // Both choices in → resolve
-        const myChoice  = data[myRole]?.choice;
-        const oppChoice = data[opponentRole()]?.choice;
+        const myChoice  = data[myRole]?.choice  || null;
+        const oppChoice = data[oppRole()]?.choice || null;
 
-        if (myChoice && oppChoice) {
+        // ── BOTH choices in: resolve once ──────────────────────────────────
+        if (myChoice && oppChoice && !roundResolved) {
+          roundResolved = true;
           resolveRound(data, myChoice, oppChoice);
+          return;
         }
 
-        if (myChoice && !oppChoice) {
-          myChoiceLabel.textContent   = `You chose ${emoji[myChoice]}`;
-          oppChoiceLabel.textContent  = "Opponent is thinking…";
-        } else if (!myChoice) {
+        // ── Only I have chosen: show waiting hint ──────────────────────────
+        if (myChoice && !oppChoice && !roundResolved) {
+          myChoiceLabel.textContent  = `You chose ${emoji[myChoice]}`;
+          oppChoiceLabel.textContent = "Opponent is thinking…";
+          return;
+        }
+
+        // ── Both choices cleared = new round ready ─────────────────────────
+        // This fires AFTER both players click "Next Round" and clear their choice.
+        if (!myChoice && !oppChoice && roundResolved) {
+          roundResolved = false;
+          resultBox.classList.add("hidden");
+          nextRoundBtn.classList.add("hidden");
+          nextRoundBtn.disabled    = false;
+          nextRoundBtn.textContent = "Next Round";
+          choiceBtns.forEach(b => b.disabled = false);
           myChoiceLabel.textContent  = "";
           oppChoiceLabel.textContent = "";
+        }
+
+        // ── Always sync scoreboard from Firebase ───────────────────────────
+        const sc = data[myRole]?.score;
+        if (sc) {
+          winsEl.textContent   = sc.wins;
+          tiesEl.textContent   = sc.ties;
+          lossesEl.textContent = sc.losses;
         }
       });
     }
 
-    // ── Make choice ───────────────────────────────────────────────────────────
+    // ── Make a choice ─────────────────────────────────────────────────────────
     choiceBtns.forEach(btn => {
       btn.addEventListener("click", () => {
-        if (!roomCode) return;
+        if (!roomCode || roundResolved) return;
         update(ref(db, `rooms/${roomCode}/${myRole}`), { choice: btn.dataset.choice });
         choiceBtns.forEach(b => b.disabled = true);
       });
     });
 
-    // ── Resolve ───────────────────────────────────────────────────────────────
+    // ── Resolve round ─────────────────────────────────────────────────────────
+    // Only player1 writes scores to Firebase to avoid a double-write race.
+    // Both players call showResult() locally so the UI is instant.
     async function resolveRound(data, myChoice, oppChoice) {
-      // Only player1 writes scores to avoid double-write
       if (myRole === "player1") {
-        const outcome1 = getResult(myChoice, oppChoice);
-        const outcome2 = getResult(oppChoice, myChoice);
+        const r1 = getResult(myChoice, oppChoice);
+        const r2 = getResult(oppChoice, myChoice);
         const s1 = data.player1.score;
         const s2 = data.player2.score;
 
-        const newS1 = {
-          wins:   s1.wins   + (outcome1 === "win"  ? 1 : 0),
-          ties:   s1.ties   + (outcome1 === "tie"  ? 1 : 0),
-          losses: s1.losses + (outcome1 === "lose" ? 1 : 0),
-        };
-        const newS2 = {
-          wins:   s2.wins   + (outcome2 === "win"  ? 1 : 0),
-          ties:   s2.ties   + (outcome2 === "tie"  ? 1 : 0),
-          losses: s2.losses + (outcome2 === "lose" ? 1 : 0),
-        };
-        await update(ref(db, `rooms/${roomCode}/player1`), { score: newS1 });
-        await update(ref(db, `rooms/${roomCode}/player2`), { score: newS2 });
+        await update(ref(db, `rooms/${roomCode}/player1/score`), {
+          wins:   s1.wins   + (r1 === "win"  ? 1 : 0),
+          ties:   s1.ties   + (r1 === "tie"  ? 1 : 0),
+          losses: s1.losses + (r1 === "lose" ? 1 : 0),
+        });
+        await update(ref(db, `rooms/${roomCode}/player2/score`), {
+          wins:   s2.wins   + (r2 === "win"  ? 1 : 0),
+          ties:   s2.ties   + (r2 === "tie"  ? 1 : 0),
+          losses: s2.losses + (r2 === "lose" ? 1 : 0),
+        });
       }
 
-      // Display result for everyone (re-read up-to-date scores next tick via listener)
-      showResult(data, myChoice, oppChoice);
+      showResult(myChoice, oppChoice);
     }
 
-    function showResult(data, myChoice, oppChoice) {
+    function showResult(myChoice, oppChoice) {
       const outcome = getResult(myChoice, oppChoice);
 
-      playerEmojiEl.textContent  = emoji[myChoice];
-      computerEmojiEl.textContent = emoji[oppChoice];
-      p1Label.textContent = "You";
-      p2Label.textContent = "Opponent";
+      playerEmojiEl.textContent = emoji[myChoice];
+      oppEmojiEl.textContent    = emoji[oppChoice];
 
       resultText.textContent =
         outcome === "win"  ? "You Win! 🎉" :
@@ -241,14 +252,6 @@
 
       detailEl.textContent = `${myChoice} vs ${oppChoice}`;
 
-      // Show scores from Firebase (will be updated by listener shortly)
-      const sc = data[myRole]?.score;
-      if (sc) {
-        winsEl.textContent   = sc.wins;
-        tiesEl.textContent   = sc.ties;
-        lossesEl.textContent = sc.losses;
-      }
-
       resultBox.classList.remove("hidden");
       nextRoundBtn.classList.remove("hidden");
       choiceBtns.forEach(b => b.disabled = true);
@@ -257,25 +260,30 @@
     }
 
     // ── Next round ────────────────────────────────────────────────────────────
+    // Each player clears their own choice. The listener detects when BOTH
+    // are null and re-enables the UI for everyone at the same time.
     nextRoundBtn.addEventListener("click", async () => {
-      resultBox.classList.add("hidden");
-      nextRoundBtn.classList.add("hidden");
-      choiceBtns.forEach(b => b.disabled = false);
+      nextRoundBtn.disabled    = true;
+      nextRoundBtn.textContent = "Waiting for opponent…";
       await update(ref(db, `rooms/${roomCode}/${myRole}`), { choice: null });
     });
 
     // ── Leave ─────────────────────────────────────────────────────────────────
     leaveBtn.addEventListener("click", leaveRoom);
+    leaveWaitBtn.addEventListener("click", leaveRoom);
 
     async function leaveRoom() {
       if (unsubscribe) unsubscribe();
       if (roomRef && myRole === "player1") {
-        await remove(roomRef); // host deletes room
+        await remove(roomRef);
       } else if (roomRef) {
-        await update(ref(db, `rooms/${roomCode}/player2`), null);
+        await update(ref(db, `rooms/${roomCode}`), { player2: null, status: "waiting" });
       }
       roomCode = roomRef = myRole = null;
+      roundResolved = false;
       choiceBtns.forEach(b => b.disabled = false);
+      nextRoundBtn.disabled    = false;
+      nextRoundBtn.textContent = "Next Round";
       resultBox.classList.add("hidden");
       nextRoundBtn.classList.add("hidden");
       joinCodeIn.value = "";
@@ -283,9 +291,6 @@
       show("lobby");
     }
 
-    function setLabels() {}
-
-    // ── Start ─────────────────────────────────────────────────────────────────
     show("lobby");
   </script>
 
@@ -307,7 +312,8 @@
 
     body {
       background: #e7e1d6;
-      background-image: repeating-linear-gradient(0deg, transparent, transparent 26px, rgba(0,0,0,0.035) 26px, rgba(0,0,0,0.035) 27px);
+      background-image: repeating-linear-gradient(0deg, transparent, transparent 26px,
+        rgba(0,0,0,0.035) 26px, rgba(0,0,0,0.035) 27px);
       font-family: var(--sans);
       color: var(--ink);
       min-height: 100vh;
@@ -355,7 +361,6 @@
       margin-bottom: 22px;
     }
 
-    /* ── Status bar ── */
     .status-bar {
       display: flex;
       align-items: center;
@@ -367,16 +372,11 @@
       color: var(--ink-mid);
     }
 
-    .dot {
-      width: 8px; height: 8px;
-      border-radius: 50%;
-      flex-shrink: 0;
-    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
     .dot.green { background: #3e8f5a; }
     .dot.red   { background: #a94442; }
     .dot.gray  { background: var(--ink-light); }
 
-    /* ── Scoreboard ── */
     .scoreboard {
       display: flex;
       justify-content: space-between;
@@ -387,13 +387,8 @@
 
     .scoreboard > div { text-align: center; }
 
-    .score {
-      font-family: var(--mono);
-      font-size: 1.3rem;
-      font-weight: 600;
-    }
-
-    .green { color: #3e8f5a; }
+    .score { font-family: var(--mono); font-size: 1.3rem; font-weight: 600; }
+    .green  { color: #3e8f5a; }
     .yellow { color: #b89b2e; }
     .red    { color: #a94442; }
 
@@ -405,7 +400,6 @@
       color: var(--ink-light);
     }
 
-    /* ── Choices ── */
     .choices {
       display: flex;
       justify-content: space-between;
@@ -419,8 +413,8 @@
       border: 1px solid var(--rule);
       border-radius: 3px;
       cursor: pointer;
-      transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s;
       font-size: 1.8rem;
+      transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s;
     }
 
     .choices button:hover:not(:disabled) {
@@ -445,7 +439,6 @@
       color: var(--ink-mid);
     }
 
-    /* ── Waiting hints ── */
     .choice-hints {
       display: flex;
       justify-content: space-between;
@@ -461,7 +454,6 @@
       font-style: italic;
     }
 
-    /* ── Result ── */
     .result {
       margin-top: 14px;
       padding-top: 14px;
@@ -511,7 +503,6 @@
       text-align: center;
     }
 
-    /* ── Buttons ── */
     .btn-row {
       display: flex;
       gap: 8px;
@@ -531,20 +522,12 @@
       transition: background 0.15s;
     }
 
-    .btn-dark {
-      background: var(--ink);
-      color: var(--paper);
-    }
-    .btn-dark:hover { background: #2b2925; }
-
-    .btn-outline {
-      background: transparent;
-      color: var(--ink-mid);
-      border: 1px solid var(--rule);
-    }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-dark { background: var(--ink); color: var(--paper); }
+    .btn-dark:hover:not(:disabled) { background: #2b2925; }
+    .btn-outline { background: transparent; color: var(--ink-mid); border: 1px solid var(--rule); }
     .btn-outline:hover { background: var(--paper-dark); }
 
-    /* ── Lobby ── */
     .lobby-section { margin-bottom: 20px; }
 
     .lobby-label {
@@ -556,10 +539,7 @@
       margin-bottom: 8px;
     }
 
-    .room-input-row {
-      display: flex;
-      gap: 8px;
-    }
+    .room-input-row { display: flex; gap: 8px; }
 
     .room-input {
       flex: 1;
@@ -577,7 +557,6 @@
 
     .room-input:focus { border-color: var(--ink-mid); }
 
-    /* ── Wait screen ── */
     .code-box {
       background: var(--paper-dark);
       border: 1px solid var(--rule);
@@ -613,12 +592,7 @@
       margin-bottom: 18px;
     }
 
-    .divider {
-      border: none;
-      border-top: 1px solid var(--rule);
-      margin: 20px 0;
-    }
-
+    .divider { border: none; border-top: 1px solid var(--rule); margin: 20px 0; }
     .hidden { display: none !important; }
   </style>
 </head>
@@ -627,15 +601,13 @@
     <h1>Rock Paper Scissors</h1>
     <div class="subtitle">Multiplayer</div>
 
-    <!-- ── LOBBY ─────────────────────────────────────────────────── -->
+    <!-- LOBBY -->
     <div id="screen-lobby">
       <div class="lobby-section">
         <div class="lobby-label">Create a new room</div>
         <button id="createBtn" class="btn btn-dark" style="width:100%">Create Room</button>
       </div>
-
       <hr class="divider">
-
       <div class="lobby-section">
         <div class="lobby-label">Join existing room</div>
         <div class="room-input-row">
@@ -645,7 +617,7 @@
       </div>
     </div>
 
-    <!-- ── WAITING ────────────────────────────────────────────────── -->
+    <!-- WAITING -->
     <div id="screen-wait" class="hidden">
       <div class="code-box">
         <div class="code-big" id="codeDisplay">——</div>
@@ -654,10 +626,10 @@
       <div class="wait-msg" id="waitMsg">Waiting for opponent…</div>
       <button id="copyBtn" class="btn btn-outline" style="width:100%">Copy Code</button>
       <hr class="divider">
-      <button id="leaveWaitBtn" class="btn btn-outline" style="width:100%;margin-top:0">Cancel</button>
+      <button id="leaveWaitBtn" class="btn btn-outline" style="width:100%">Cancel</button>
     </div>
 
-    <!-- ── GAME ───────────────────────────────────────────────────── -->
+    <!-- GAME -->
     <div id="screen-game" class="hidden">
       <div class="status-bar">
         <div class="dot gray" id="statusDot"></div>
@@ -694,12 +666,12 @@
         <div class="vs">
           <div>
             <div id="playerEmoji" class="emoji"></div>
-            <div class="vs-label" id="p1Label">You</div>
+            <div class="vs-label">You</div>
           </div>
           <div class="vs-text">vs</div>
           <div>
             <div id="computerEmoji" class="emoji"></div>
-            <div class="vs-label" id="p2Label">Opponent</div>
+            <div class="vs-label">Opponent</div>
           </div>
         </div>
         <div id="resultText" class="result-text"></div>
@@ -712,14 +684,5 @@
       </div>
     </div>
   </div>
-
-  <script type="module">
-    // Wire up the leave-wait button (not in module scope above)
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-    // leaveWaitBtn handled inline
-    document.getElementById("leaveWaitBtn").addEventListener("click", () => {
-      location.reload();
-    });
-  </script>
 </body>
 </html>
