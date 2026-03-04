@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>RPS Admin Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;600&family=DM+Sans:wght@400;500;600&family=Playfair+Display:wght@700&display=swap" rel="stylesheet">
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+    import { getDatabase, ref, onValue }
+      from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyDL1AtmuRSsg83UYBVnrl_tZAhxId63lRM",
+      authDomain: "rock-paper-scissors-88a22.firebaseapp.com",
+      databaseURL: "https://rock-paper-scissors-88a22-default-rtdb.firebaseio.com",
+      projectId: "rock-paper-scissors-88a22",
+      storageBucket: "rock-paper-scissors-88a22.firebasestorage.app",
+      messagingSenderId: "635044147900",
+      appId: "1:635044147900:web:b2699141218a0478fad6b9",
+      measurementId: "G-6WKVJJR893"
+    };
+
+    // ── Password gate ─────────────────────────────────────────────────────────
+    // Change this to whatever password you want
+    const ADMIN_PASSWORD = "rps-admin-2024";
+
+    const gateEl    = document.getElementById("gate");
+    const dashEl    = document.getElementById("dashboard");
+    const passInput = document.getElementById("passInput");
+    const passBtn   = document.getElementById("passBtn");
+    const passError = document.getElementById("passError");
+
+    passBtn.addEventListener("click", tryLogin);
+    passInput.addEventListener("keydown", e => { if (e.key === "Enter") tryLogin(); });
+
+    function tryLogin() {
+      if (passInput.value === ADMIN_PASSWORD) {
+        gateEl.classList.add("hidden");
+        dashEl.classList.remove("hidden");
+        initDashboard();
+      } else {
+        passError.textContent = "Incorrect password.";
+        passInput.value = "";
+        passInput.focus();
+      }
+    }
+
+    // ── Dashboard ─────────────────────────────────────────────────────────────
+    function initDashboard() {
+      const app = initializeApp(firebaseConfig);
+      const db  = getDatabase(app);
+
+      // Live visitor count
+      onValue(ref(db, "analytics/visitors"), snap => {
+        const data  = snap.val() || {};
+        const users = Object.values(data);
+
+        document.getElementById("statTotal").textContent   = users.length;
+        document.getElementById("statNamed").textContent   = users.filter(u => u.username).length;
+        document.getElementById("statVisits").textContent  = users.reduce((s, u) => s + (u.visits || 0), 0);
+
+        // Visitors table
+        const sorted = users.sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
+        const tbody  = document.getElementById("visitorBody");
+        tbody.innerHTML = sorted.map(u => `
+          <tr>
+            <td>${u.username ? `<strong>${esc(u.username)}</strong>` : '<span class="muted">anonymous</span>'}</td>
+            <td>${formatDate(u.firstSeen)}</td>
+            <td>${formatDate(u.lastSeen)}</td>
+            <td class="center">${u.visits || 1}</td>
+          </tr>
+        `).join("");
+      });
+
+      // Match history
+      onValue(ref(db, "analytics/matches"), snap => {
+        const data    = snap.val() || {};
+        const matches = Object.values(data).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+        document.getElementById("statMatches").textContent = matches.length;
+
+        // Choice popularity
+        const counts = { Rock: 0, Paper: 0, Scissors: 0 };
+        matches.forEach(m => {
+          if (counts[m.p1choice] !== undefined) counts[m.p1choice]++;
+          if (counts[m.p2choice] !== undefined) counts[m.p2choice]++;
+        });
+        const total = counts.Rock + counts.Paper + counts.Scissors || 1;
+        ["Rock", "Paper", "Scissors"].forEach(c => {
+          const pct = Math.round((counts[c] / total) * 100);
+          document.getElementById(`bar${c}`).style.width = pct + "%";
+          document.getElementById(`pct${c}`).textContent = pct + "%";
+        });
+
+        // Matches table
+        const tbody = document.getElementById("matchBody");
+        tbody.innerHTML = matches.slice(0, 100).map(m => {
+          const isTie = m.winner === "tie";
+          return `
+            <tr>
+              <td class="muted">${formatDate(m.timestamp)}</td>
+              <td>${esc(m.player1 || "?")}</td>
+              <td class="emoji-cell">🪨📄✂️`.replace("🪨📄✂️",
+                m.p1choice === "Rock" ? "🪨" : m.p1choice === "Paper" ? "📄" : "✂️"
+              ) + `</td>
+              <td class="center muted">vs</td>
+              <td class="emoji-cell">${
+                m.p2choice === "Rock" ? "🪨" : m.p2choice === "Paper" ? "📄" : "✂️"
+              }</td>
+              <td>${esc(m.player2 || "?")}</td>
+              <td class="${isTie ? "tie" : "winner"}">${isTie ? "Tie" : "🏆 " + esc(m.winner)}</td>
+            </tr>
+          `;
+        }).join("");
+
+        if (matches.length === 0) {
+          tbody.innerHTML = `<tr><td colspan="7" class="empty">No matches played yet.</td></tr>`;
+        }
+      });
+    }
+
+    function formatDate(ts) {
+      if (!ts) return "—";
+      const d = new Date(ts);
+      return d.toLocaleDateString() + " " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
+
+    function esc(s) {
+      return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+    }
+  </script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface2: #22263a;
+      --border: #2e3248;
+      --text: #e8eaf0;
+      --muted: #6b7280;
+      --accent: #6c8ef5;
+      --green: #4ade80;
+      --yellow: #fbbf24;
+      --red: #f87171;
+      --mono: 'DM Mono', monospace;
+      --sans: 'DM Sans', system-ui, sans-serif;
+      --serif: 'Playfair Display', serif;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      min-height: 100vh;
+      padding: 32px 24px;
+    }
+
+    /* ── Gate ── */
+    #gate {
+      max-width: 380px;
+      margin: 80px auto;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 36px 32px;
+      text-align: center;
+    }
+
+    #gate h2 {
+      font-family: var(--serif);
+      font-size: 1.6rem;
+      margin-bottom: 8px;
+    }
+
+    #gate p {
+      color: var(--muted);
+      font-size: 0.85rem;
+      margin-bottom: 24px;
+    }
+
+    .gate-row { display: flex; gap: 8px; }
+
+    .gate-input {
+      flex: 1;
+      padding: 10px 14px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 0.9rem;
+      outline: none;
+    }
+
+    .gate-input:focus { border-color: var(--accent); }
+
+    .gate-btn {
+      padding: 10px 18px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-family: var(--sans);
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .gate-btn:hover { opacity: 0.9; }
+
+    .gate-error {
+      color: var(--red);
+      font-size: 0.8rem;
+      margin-top: 10px;
+      min-height: 18px;
+    }
+
+    /* ── Dashboard ── */
+    #dashboard { max-width: 1000px; margin: 0 auto; }
+
+    .dash-header {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      margin-bottom: 28px;
+    }
+
+    .dash-header h1 {
+      font-family: var(--serif);
+      font-size: 1.8rem;
+    }
+
+    .live-badge {
+      background: #16a34a22;
+      color: var(--green);
+      border: 1px solid #16a34a55;
+      border-radius: 20px;
+      padding: 3px 10px;
+      font-family: var(--mono);
+      font-size: 0.6rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    /* Stats row */
+    .stats-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 14px;
+      margin-bottom: 28px;
+    }
+
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 18px 20px;
+    }
+
+    .stat-label {
+      font-family: var(--mono);
+      font-size: 0.58rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    .stat-value {
+      font-family: var(--mono);
+      font-size: 2rem;
+      font-weight: 600;
+      color: var(--accent);
+    }
+
+    /* Section */
+    .section {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      margin-bottom: 22px;
+      overflow: hidden;
+    }
+
+    .section-header {
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      font-family: var(--mono);
+      font-size: 0.65rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    /* Choice bars */
+    .choice-bars { padding: 20px; display: flex; flex-direction: column; gap: 12px; }
+
+    .choice-row { display: flex; align-items: center; gap: 12px; }
+
+    .choice-name {
+      width: 90px;
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+
+    .bar-track {
+      flex: 1;
+      height: 10px;
+      background: var(--surface2);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+
+    .bar-fill {
+      height: 100%;
+      border-radius: 6px;
+      background: var(--accent);
+      transition: width 0.6s ease;
+      width: 0%;
+    }
+
+    .bar-pct {
+      width: 36px;
+      text-align: right;
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      color: var(--muted);
+    }
+
+    /* Tables */
+    table { width: 100%; border-collapse: collapse; }
+
+    th {
+      padding: 10px 16px;
+      text-align: left;
+      font-family: var(--mono);
+      font-size: 0.58rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+    }
+
+    td {
+      padding: 10px 16px;
+      font-size: 0.85rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: var(--surface2); }
+
+    .muted  { color: var(--muted); font-size: 0.78rem; }
+    .center { text-align: center; }
+    .winner { color: var(--yellow); font-family: var(--mono); font-size: 0.8rem; }
+    .tie    { color: var(--muted);  font-family: var(--mono); font-size: 0.8rem; }
+    .emoji-cell { font-size: 1.2rem; text-align: center; }
+    .empty  { text-align: center; color: var(--muted); padding: 28px; }
+
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+
+  <!-- Password gate -->
+  <div id="gate">
+    <h2>Admin Dashboard</h2>
+    <p>Rock Paper Scissors — Analytics</p>
+    <div class="gate-row">
+      <input id="passInput" class="gate-input" type="password" placeholder="Enter password…" />
+      <button id="passBtn" class="gate-btn">Enter</button>
+    </div>
+    <div id="passError" class="gate-error"></div>
+  </div>
+
+  <!-- Dashboard -->
+  <div id="dashboard" class="hidden">
+    <div class="dash-header">
+      <h1>Dashboard</h1>
+      <span class="live-badge">● Live</span>
+    </div>
+
+    <!-- Stat cards -->
+    <div class="stats-row">
+      <div class="stat-card">
+        <div class="stat-label">Total Visitors</div>
+        <div class="stat-value" id="statTotal">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Named Players</div>
+        <div class="stat-value" id="statNamed">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Total Visits</div>
+        <div class="stat-value" id="statVisits">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Matches Played</div>
+        <div class="stat-value" id="statMatches">—</div>
+      </div>
+    </div>
+
+    <!-- Choice popularity -->
+    <div class="section">
+      <div class="section-header">Choice Popularity</div>
+      <div class="choice-bars">
+        <div class="choice-row">
+          <div class="choice-name">🪨 Rock</div>
+          <div class="bar-track"><div class="bar-fill" id="barRock"></div></div>
+          <div class="bar-pct" id="pctRock">0%</div>
+        </div>
+        <div class="choice-row">
+          <div class="choice-name">📄 Paper</div>
+          <div class="bar-track"><div class="bar-fill" id="barPaper"></div></div>
+          <div class="bar-pct" id="pctPaper">0%</div>
+        </div>
+        <div class="choice-row">
+          <div class="choice-name">✂️ Scissors</div>
+          <div class="bar-track"><div class="bar-fill" id="barScissors"></div></div>
+          <div class="bar-pct" id="pctScissors">0%</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Visitors table -->
+    <div class="section">
+      <div class="section-header">Visitors</div>
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>First Seen</th>
+            <th>Last Seen</th>
+            <th class="center">Visits</th>
+          </tr>
+        </thead>
+        <tbody id="visitorBody">
+          <tr><td colspan="4" class="empty">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Match history table -->
+    <div class="section">
+      <div class="section-header">Match History (last 100)</div>
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Player 1</th>
+            <th class="center">Pick</th>
+            <th class="center"></th>
+            <th class="center">Pick</th>
+            <th>Player 2</th>
+            <th>Result</th>
+          </tr>
+        </thead>
+        <tbody id="matchBody">
+          <tr><td colspan="7" class="empty">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</body>
+</html>
