@@ -8,8 +8,8 @@
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;600&family=DM+Sans:wght@400;500&family=Playfair+Display:ital,wght@0,700;1,400&display=swap" rel="stylesheet">
 
   <script type="module">
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-    import { getDatabase, ref, set, onValue, update, remove }
+    import { initializeApp }    from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+    import { getDatabase, ref, set, get, onValue, update, remove, push, serverTimestamp }
       from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 
     const firebaseConfig = {
@@ -32,14 +32,62 @@
     let roomCode      = null;
     let roomRef       = null;
     let unsubscribe   = null;
-    let roundResolved = false; // prevents resolveRound firing multiple times per round
+    let roundResolved = false;
+    let myUsername    = null;
+    let visitorId     = null;  // persistent ID stored in localStorage
+
+    // ── Visitor tracking ──────────────────────────────────────────────────────
+    function getOrCreateVisitorId() {
+      let id = localStorage.getItem("rps_visitor_id");
+      if (!id) {
+        id = "v_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8);
+        localStorage.setItem("rps_visitor_id", id);
+      }
+      return id;
+    }
+
+    async function logVisit() {
+      visitorId = getOrCreateVisitorId();
+      const visitorRef = ref(db, `analytics/visitors/${visitorId}`);
+      const snap = await get(visitorRef);
+      const existing = snap.val();
+      await set(visitorRef, {
+        firstSeen:  existing?.firstSeen  || Date.now(),
+        lastSeen:   Date.now(),
+        visits:     (existing?.visits    || 0) + 1,
+        username:   existing?.username   || null,
+        userAgent:  navigator.userAgent.substring(0, 120),
+      });
+    }
+
+    async function updateVisitorUsername(name) {
+      if (!visitorId) return;
+      await update(ref(db, `analytics/visitors/${visitorId}`), { username: name });
+    }
+
+    async function logMatch(p1name, p2name, p1choice, p2choice) {
+      const outcome1 = getResult(p1choice, p2choice);
+      await push(ref(db, "analytics/matches"), {
+        timestamp:  Date.now(),
+        roomCode:   roomCode,
+        player1:    p1name,
+        player2:    p2name,
+        p1choice:   p1choice,
+        p2choice:   p2choice,
+        winner:     outcome1 === "win" ? p1name : outcome1 === "lose" ? p2name : "tie",
+      });
+    }
 
     // ── DOM ───────────────────────────────────────────────────────────────────
     const screens = {
+      name:  document.getElementById("screen-name"),
       lobby: document.getElementById("screen-lobby"),
       wait:  document.getElementById("screen-wait"),
       game:  document.getElementById("screen-game"),
     };
+    const nameInput      = document.getElementById("nameInput");
+    const nameBtn        = document.getElementById("nameBtn");
+    const nameGreeting   = document.getElementById("nameGreeting");
     const createBtn      = document.getElementById("createBtn");
     const joinBtn        = document.getElementById("joinBtn");
     const joinCodeIn     = document.getElementById("joinCode");
@@ -62,6 +110,7 @@
     const statusLabel    = document.getElementById("statusLabel");
     const myChoiceLabel  = document.getElementById("myChoiceLabel");
     const oppChoiceLabel = document.getElementById("oppChoiceLabel");
+    const gameTitle      = document.getElementById("gameTitle");
 
     // ── Helpers ───────────────────────────────────────────────────────────────
     function show(name) {
@@ -87,6 +136,26 @@
       return myRole === "player1" ? "player2" : "player1";
     }
 
+    // ── Name screen ───────────────────────────────────────────────────────────
+    nameBtn.addEventListener("click", enterName);
+    nameInput.addEventListener("keydown", e => { if (e.key === "Enter") enterName(); });
+
+    async function enterName() {
+      const name = nameInput.value.trim();
+      if (!name) return;
+
+      // Secret admin code
+      if (name.toLowerCase() === "!admin") {
+        window.location.href = "admin.html";
+        return;
+      }
+
+      myUsername = name;
+      await updateVisitorUsername(name);
+      nameGreeting.textContent = `Welcome, ${name}!`;
+      show("lobby");
+    }
+
     // ── Create Room ───────────────────────────────────────────────────────────
     createBtn.addEventListener("click", async () => {
       roomCode = genCode();
@@ -94,7 +163,7 @@
       roomRef  = ref(db, `rooms/${roomCode}`);
 
       await set(roomRef, {
-        player1: { score: { wins: 0, ties: 0, losses: 0 }, choice: null },
+        player1: { score: { wins: 0, ties: 0, losses: 0 }, choice: null, name: myUsername },
         player2: null,
         status: "waiting"
       });
@@ -123,7 +192,7 @@
       roomRef  = ref(db, `rooms/${roomCode}`);
 
       await update(roomRef, {
-        "player2": { score: { wins: 0, ties: 0, losses: 0 }, choice: null },
+        "player2": { score: { wins: 0, ties: 0, losses: 0 }, choice: null, name: myUsername },
         "status": "playing"
       });
 
@@ -145,42 +214,44 @@
         const data = snap.val();
         if (!data) return;
 
-        // P1: opponent joined, move to game
-        if (myRole === "player1" && data.status === "playing" && screens.wait && !screens.wait.classList.contains("hidden")) {
+        if (myRole === "player1" && data.status === "playing" && !screens.wait.classList.contains("hidden")) {
           show("game");
+          const oppName = data.player2?.name || "Opponent";
+          gameTitle.textContent = `vs ${oppName}`;
         }
 
-        // Opponent disconnected
         if (data.status === "playing" && !data[oppRole()]) {
           alert("Opponent left the game.");
           leaveRoom();
           return;
         }
 
-        // Status dot
+        if (screens.game && !screens.game.classList.contains("hidden")) {
+          const oppName = data[oppRole()]?.name || "Opponent";
+          gameTitle.textContent = `vs ${oppName}`;
+        }
+
         const oppPresent        = !!data[oppRole()];
         statusDot.className     = "dot " + (oppPresent ? "green" : "red");
-        statusLabel.textContent = oppPresent ? "Opponent connected" : "Waiting for opponent…";
+        statusLabel.textContent = oppPresent
+          ? `${data[oppRole()]?.name || "Opponent"} connected`
+          : "Waiting for opponent…";
 
         const myChoice  = data[myRole]?.choice  || null;
         const oppChoice = data[oppRole()]?.choice || null;
 
-        // ── BOTH choices in: resolve once ──────────────────────────────────
         if (myChoice && oppChoice && !roundResolved) {
           roundResolved = true;
           resolveRound(data, myChoice, oppChoice);
           return;
         }
 
-        // ── Only I have chosen: show waiting hint ──────────────────────────
         if (myChoice && !oppChoice && !roundResolved) {
           myChoiceLabel.textContent  = `You chose ${emoji[myChoice]}`;
-          oppChoiceLabel.textContent = "Opponent is thinking…";
+          oppChoiceLabel.textContent = `${data[oppRole()]?.name || "Opponent"} is thinking…`;
           return;
         }
 
-        // ── Both choices cleared = new round ready ─────────────────────────
-        // This fires AFTER both players click "Next Round" and clear their choice.
         if (!myChoice && !oppChoice && roundResolved) {
           roundResolved = false;
           resultBox.classList.add("hidden");
@@ -192,7 +263,6 @@
           oppChoiceLabel.textContent = "";
         }
 
-        // ── Always sync scoreboard from Firebase ───────────────────────────
         const sc = data[myRole]?.score;
         if (sc) {
           winsEl.textContent   = sc.wins;
@@ -212,8 +282,6 @@
     });
 
     // ── Resolve round ─────────────────────────────────────────────────────────
-    // Only player1 writes scores to Firebase to avoid a double-write race.
-    // Both players call showResult() locally so the UI is instant.
     async function resolveRound(data, myChoice, oppChoice) {
       if (myRole === "player1") {
         const r1 = getResult(myChoice, oppChoice);
@@ -231,16 +299,28 @@
           ties:   s2.ties   + (r2 === "tie"  ? 1 : 0),
           losses: s2.losses + (r2 === "lose" ? 1 : 0),
         });
+
+        // ── Log the match to analytics ──────────────────────────────────
+        await logMatch(
+          data.player1.name || "Player 1",
+          data.player2.name || "Player 2",
+          myChoice,
+          oppChoice
+        );
       }
 
-      showResult(myChoice, oppChoice);
+      showResult(data, myChoice, oppChoice);
     }
 
-    function showResult(myChoice, oppChoice) {
+    function showResult(data, myChoice, oppChoice) {
       const outcome = getResult(myChoice, oppChoice);
+      const oppName = data[oppRole()]?.name || "Opponent";
 
       playerEmojiEl.textContent = emoji[myChoice];
       oppEmojiEl.textContent    = emoji[oppChoice];
+
+      document.getElementById("vsP1Label").textContent = myUsername || "You";
+      document.getElementById("vsP2Label").textContent = oppName;
 
       resultText.textContent =
         outcome === "win"  ? "You Win! 🎉" :
@@ -260,8 +340,6 @@
     }
 
     // ── Next round ────────────────────────────────────────────────────────────
-    // Each player clears their own choice. The listener detects when BOTH
-    // are null and re-enables the UI for everyone at the same time.
     nextRoundBtn.addEventListener("click", async () => {
       nextRoundBtn.disabled    = true;
       nextRoundBtn.textContent = "Waiting for opponent…";
@@ -288,10 +366,13 @@
       nextRoundBtn.classList.add("hidden");
       joinCodeIn.value = "";
       winsEl.textContent = tiesEl.textContent = lossesEl.textContent = "0";
+      gameTitle.textContent = "";
       show("lobby");
     }
 
-    show("lobby");
+    // ── Init ──────────────────────────────────────────────────────────────────
+    logVisit();
+    show("name");
   </script>
 
   <style>
@@ -349,7 +430,7 @@
       font-family: var(--serif);
       font-size: 1.85rem;
       letter-spacing: -0.02em;
-      margin-bottom: 6px;
+      margin-bottom: 4px;
     }
 
     .subtitle {
@@ -359,6 +440,15 @@
       text-transform: uppercase;
       color: var(--ink-light);
       margin-bottom: 22px;
+    }
+
+    .game-vs {
+      font-family: var(--mono);
+      font-size: 0.65rem;
+      letter-spacing: 0.1em;
+      color: var(--accent);
+      margin-bottom: 14px;
+      min-height: 16px;
     }
 
     .status-bar {
@@ -386,7 +476,6 @@
     }
 
     .scoreboard > div { text-align: center; }
-
     .score { font-family: var(--mono); font-size: 1.3rem; font-weight: 600; }
     .green  { color: #3e8f5a; }
     .yellow { color: #b89b2e; }
@@ -417,16 +506,8 @@
       transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s;
     }
 
-    .choices button:hover:not(:disabled) {
-      transform: translateY(-2px);
-      box-shadow: 0 6px 12px rgba(0,0,0,0.12);
-    }
-
-    .choices button:active:not(:disabled) {
-      transform: translateY(0);
-      box-shadow: inset 0 2px 4px rgba(0,0,0,0.18);
-    }
-
+    .choices button:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 6px 12px rgba(0,0,0,0.12); }
+    .choices button:active:not(:disabled) { transform: translateY(0); box-shadow: inset 0 2px 4px rgba(0,0,0,0.18); }
     .choices button:disabled { opacity: 0.45; cursor: not-allowed; }
 
     .choices button span {
@@ -460,13 +541,7 @@
       border-top: 1px dashed var(--rule);
     }
 
-    .vs {
-      display: flex;
-      justify-content: space-around;
-      align-items: center;
-      margin-bottom: 10px;
-    }
-
+    .vs { display: flex; justify-content: space-around; align-items: center; margin-bottom: 10px; }
     .vs > div { text-align: center; }
 
     .vs-label {
@@ -503,11 +578,7 @@
       text-align: center;
     }
 
-    .btn-row {
-      display: flex;
-      gap: 8px;
-      margin-top: 22px;
-    }
+    .btn-row { display: flex; gap: 8px; margin-top: 22px; }
 
     .btn {
       flex: 1;
@@ -527,6 +598,30 @@
     .btn-dark:hover:not(:disabled) { background: #2b2925; }
     .btn-outline { background: transparent; color: var(--ink-mid); border: 1px solid var(--rule); }
     .btn-outline:hover { background: var(--paper-dark); }
+
+    /* Name screen */
+    .name-prompt {
+      font-family: var(--serif);
+      font-size: 1.1rem;
+      margin-bottom: 14px;
+      color: var(--ink-mid);
+    }
+
+    .name-row { display: flex; gap: 8px; }
+
+    .name-input {
+      flex: 1;
+      padding: 10px 12px;
+      background: var(--paper-dark);
+      border: 1px solid var(--rule);
+      border-radius: 2px;
+      font-family: var(--sans);
+      font-size: 0.95rem;
+      color: var(--ink);
+      outline: none;
+    }
+
+    .name-input:focus { border-color: var(--ink-mid); }
 
     .lobby-section { margin-bottom: 20px; }
 
@@ -593,16 +688,25 @@
     }
 
     .divider { border: none; border-top: 1px solid var(--rule); margin: 20px 0; }
-    .hidden { display: none !important; }
+    .hidden  { display: none !important; }
   </style>
 </head>
 <body>
   <div class="app">
     <h1>Rock Paper Scissors</h1>
-    <div class="subtitle">Multiplayer</div>
+    <div class="subtitle" id="nameGreeting">Multiplayer</div>
+
+    <!-- NAME -->
+    <div id="screen-name">
+      <p class="name-prompt">What's your name?</p>
+      <div class="name-row">
+        <input id="nameInput" class="name-input" maxlength="20" placeholder="Enter your name…" />
+        <button id="nameBtn" class="btn btn-dark" style="flex:0 0 auto;padding:10px 16px">Play →</button>
+      </div>
+    </div>
 
     <!-- LOBBY -->
-    <div id="screen-lobby">
+    <div id="screen-lobby" class="hidden">
       <div class="lobby-section">
         <div class="lobby-label">Create a new room</div>
         <button id="createBtn" class="btn btn-dark" style="width:100%">Create Room</button>
@@ -631,6 +735,7 @@
 
     <!-- GAME -->
     <div id="screen-game" class="hidden">
+      <div class="game-vs" id="gameTitle"></div>
       <div class="status-bar">
         <div class="dot gray" id="statusDot"></div>
         <span id="statusLabel">Connecting…</span>
@@ -666,12 +771,12 @@
         <div class="vs">
           <div>
             <div id="playerEmoji" class="emoji"></div>
-            <div class="vs-label">You</div>
+            <div class="vs-label" id="vsP1Label">You</div>
           </div>
           <div class="vs-text">vs</div>
           <div>
             <div id="computerEmoji" class="emoji"></div>
-            <div class="vs-label">Opponent</div>
+            <div class="vs-label" id="vsP2Label">Opponent</div>
           </div>
         </div>
         <div id="resultText" class="result-text"></div>
